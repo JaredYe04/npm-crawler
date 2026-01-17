@@ -60,13 +60,29 @@ async function getPackageDownloads(packageNames) {
       ]);
 
       // 处理返回的数据结构
-      // npm API 批量请求返回数组，单个请求返回对象
+      // npm API 批量请求返回对象 { "package-name": { downloads, package, ... }, ... }
+      // 单个请求返回对象 { downloads, package, start, end }
+      // 注意：某些包可能返回 null（如新包或已删除的包）
       const processResponse = (response, pkg) => {
+        // 批量请求：返回的是对象，键是包名
+        if (response && typeof response === 'object' && !Array.isArray(response)) {
+          // 检查是否是批量请求格式（有包名作为键）
+          if (response[pkg]) {
+            // 处理 null 的情况
+            if (response[pkg] === null) {
+              return 0;
+            }
+            return response[pkg].downloads || 0;
+          }
+          // 单个请求格式：直接有 package 字段
+          if (response.package === pkg) {
+            return response.downloads || 0;
+          }
+        }
+        // 数组格式（虽然 npm API 通常不返回数组，但保留兼容性）
         if (Array.isArray(response)) {
           const item = response.find(p => p.package === pkg);
           return item?.downloads || 0;
-        } else if (response.package === pkg) {
-          return response.downloads || 0;
         }
         return 0;
       };
