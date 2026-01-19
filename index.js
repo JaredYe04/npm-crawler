@@ -338,15 +338,6 @@ async function createOrUpdateIssue(octokit, report, date) {
         body: report
       });
       core.info(`Updated existing issue #${todayIssue.number}`);
-      
-      // 添加评论以触发通知
-      await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: todayIssue.number,
-        body: '📊 统计数据已更新！'
-      });
-      
       return todayIssue.number;
     } else {
       // 创建新 Issue
@@ -358,15 +349,6 @@ async function createOrUpdateIssue(octokit, report, date) {
         labels: ['npm-stats', 'automated']
       });
       core.info(`Created new issue #${issue.number}`);
-      
-      // 添加评论以触发通知（GitHub 会在创建 Issue 时发送通知，但添加评论可以确保通知）
-      await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: issue.number,
-        body: '📊 今日 npm 下载量统计报告已生成！'
-      });
-      
       return issue.number;
     }
   } catch (error) {
