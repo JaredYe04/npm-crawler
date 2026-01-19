@@ -144,12 +144,86 @@ async function getPackageDownloadsFallback(packageNames) {
 }
 
 /**
+ * 从 Issue body 中解析上一次的统计数据
+ */
+function parsePreviousStats(issueBody) {
+  const stats = {};
+  
+  // 首先提取汇总统计数据（无论是否有表格都要提取）
+  const totalDayMatch = issueBody.match(/- \*\*今日总下载量\*\*: ([\d,]+)/);
+  const totalWeekMatch = issueBody.match(/- \*\*本周总下载量\*\*: ([\d,]+)/);
+  const totalMonthMatch = issueBody.match(/- \*\*本月总下载量\*\*: ([\d,]+)/);
+  
+  if (totalDayMatch || totalWeekMatch || totalMonthMatch) {
+    stats['_total'] = {
+      lastDay: totalDayMatch ? parseInt(totalDayMatch[1].replace(/,/g, '')) : 0,
+      lastWeek: totalWeekMatch ? parseInt(totalWeekMatch[1].replace(/,/g, '')) : 0,
+      lastMonth: totalMonthMatch ? parseInt(totalMonthMatch[1].replace(/,/g, '')) : 0
+    };
+  }
+  
+  // 尝试从表格中提取各个包的详细数据
+  const tableMatch = issueBody.match(/\| Package \| 今日 \| 本周 \| 本月 \|/);
+  if (tableMatch) {
+    const tableStart = issueBody.indexOf(tableMatch[0]);
+    const tableEnd = issueBody.indexOf('\n\n', tableStart);
+    const tableContent = issueBody.substring(tableStart, tableEnd !== -1 ? tableEnd : issueBody.length);
+    
+    // 匹配表格行：| `package-name` | 数字（可能包含增长信息）| 数字 | 数字 |
+    // 增长信息格式：数字 ↑/↓ +数字 (+百分比%)，我们只需要提取第一个数字
+    const rowRegex = /\| `([^`]+)` \| ([\d,]+)(?:\s+[↑↓→].*?)? \| ([\d,]+)(?:\s+[↑↓→].*?)? \| ([\d,]+)(?:\s+[↑↓→].*?)? \|/g;
+    let match;
+    while ((match = rowRegex.exec(tableContent)) !== null) {
+      const pkg = match[1];
+      stats[pkg] = {
+        lastDay: parseInt(match[2].replace(/,/g, '')) || 0,
+        lastWeek: parseInt(match[3].replace(/,/g, '')) || 0,
+        lastMonth: parseInt(match[4].replace(/,/g, '')) || 0
+      };
+    }
+  }
+  
+  return stats;
+}
+
+/**
+ * 计算增长量和增长率
+ */
+function calculateGrowth(current, previous) {
+  if (!previous || previous === 0) {
+    return { change: current, changePercent: current > 0 ? 100 : 0 };
+  }
+  const change = current - previous;
+  const changePercent = ((change / previous) * 100).toFixed(1);
+  return { change, changePercent };
+}
+
+/**
+ * 格式化增长显示
+ */
+function formatGrowth(growth) {
+  const { change, changePercent } = growth;
+  if (change === 0) {
+    return '→ 0 (0.0%)';
+  }
+  const arrow = change > 0 ? '↑' : '↓';
+  const sign = change > 0 ? '+' : '';
+  return `${arrow} ${sign}${change.toLocaleString()} (${sign}${changePercent}%)`;
+}
+
+/**
  * 生成 Markdown 报告
  */
-function generateReport(stats, date) {
+function generateReport(stats, date, previousStats = null) {
   const totalWeek = stats.reduce((sum, stat) => sum + stat.lastWeek, 0);
   const totalMonth = stats.reduce((sum, stat) => sum + stat.lastMonth, 0);
   const totalDay = stats.reduce((sum, stat) => sum + stat.lastDay, 0);
+
+  // 计算汇总的增长
+  const prevTotal = previousStats?.['_total'] || {};
+  const dayGrowth = calculateGrowth(totalDay, prevTotal.lastDay);
+  const weekGrowth = calculateGrowth(totalWeek, prevTotal.lastWeek);
+  const monthGrowth = calculateGrowth(totalMonth, prevTotal.lastMonth);
 
   // 按周下载量排序
   const sortedStats = [...stats].sort((a, b) => b.lastWeek - a.lastWeek);
@@ -158,22 +232,82 @@ function generateReport(stats, date) {
   report += `> 自动生成于 ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n\n`;
   
   report += `### 📊 汇总统计\n\n`;
-  report += `- **今日总下载量**: ${totalDay.toLocaleString()}\n`;
-  report += `- **本周总下载量**: ${totalWeek.toLocaleString()}\n`;
-  report += `- **本月总下载量**: ${totalMonth.toLocaleString()}\n\n`;
+  report += `- **今日总下载量**: ${totalDay.toLocaleString()} ${previousStats ? `(${formatGrowth(dayGrowth)})` : ''}\n`;
+  report += `- **本周总下载量**: ${totalWeek.toLocaleString()} ${previousStats ? `(${formatGrowth(weekGrowth)})` : ''}\n`;
+  report += `- **本月总下载量**: ${totalMonth.toLocaleString()} ${previousStats ? `(${formatGrowth(monthGrowth)})` : ''}\n\n`;
 
   report += `### 📈 详细数据\n\n`;
   report += `| Package | 今日 | 本周 | 本月 |\n`;
   report += `|---------|------|------|------|\n`;
 
   sortedStats.forEach(stat => {
-    report += `| \`${stat.name}\` | ${stat.lastDay.toLocaleString()} | ${stat.lastWeek.toLocaleString()} | ${stat.lastMonth.toLocaleString()} |\n`;
+    const prev = previousStats?.[stat.name];
+    const dayGrowth = prev ? calculateGrowth(stat.lastDay, prev.lastDay) : null;
+    const weekGrowth = prev ? calculateGrowth(stat.lastWeek, prev.lastWeek) : null;
+    const monthGrowth = prev ? calculateGrowth(stat.lastMonth, prev.lastMonth) : null;
+    
+    const dayStr = stat.lastDay.toLocaleString() + (dayGrowth ? ` ${formatGrowth(dayGrowth)}` : '');
+    const weekStr = stat.lastWeek.toLocaleString() + (weekGrowth ? ` ${formatGrowth(weekGrowth)}` : '');
+    const monthStr = stat.lastMonth.toLocaleString() + (monthGrowth ? ` ${formatGrowth(monthGrowth)}` : '');
+    
+    report += `| \`${stat.name}\` | ${dayStr} | ${weekStr} | ${monthStr} |\n`;
   });
 
   report += `\n---\n\n`;
   report += `*由 [npm-crawler](https://github.com/${github.context.repo.owner}/${github.context.repo.repo}) 自动生成*`;
 
   return report;
+}
+
+/**
+ * 获取上一次的 Issue 统计数据
+ */
+async function getPreviousIssueStats(octokit, currentDate) {
+  try {
+    const { owner, repo } = github.context.repo;
+    
+    // 获取所有带 npm-stats 标签的 Issue
+    const { data: issues } = await octokit.rest.issues.listForRepo({
+      owner,
+      repo,
+      state: 'all', // 包括已关闭的
+      labels: 'npm-stats',
+      per_page: 30,
+      sort: 'created',
+      direction: 'desc'
+    });
+
+    // 找到当前日期之前的最近一个 Issue
+    const currentDateObj = new Date(currentDate);
+    for (const issue of issues) {
+      // 从标题中提取日期
+      const dateMatch = issue.title.match(/(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch) {
+        const issueDate = new Date(dateMatch[1]);
+        if (issueDate < currentDateObj) {
+          // 获取 Issue 的完整内容
+          const { data: fullIssue } = await octokit.rest.issues.get({
+            owner,
+            repo,
+            issue_number: issue.number
+          });
+          
+          if (fullIssue.body) {
+            const previousStats = parsePreviousStats(fullIssue.body);
+            if (Object.keys(previousStats).length > 0) {
+              core.info(`Found previous stats from issue #${issue.number} (${dateMatch[1]})`);
+              return previousStats;
+            }
+          }
+        }
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    core.warning(`Failed to get previous issue stats: ${error.message}`);
+    return null;
+  }
 }
 
 /**
@@ -204,6 +338,15 @@ async function createOrUpdateIssue(octokit, report, date) {
         body: report
       });
       core.info(`Updated existing issue #${todayIssue.number}`);
+      
+      // 添加评论以触发通知
+      await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: todayIssue.number,
+        body: '📊 统计数据已更新！'
+      });
+      
       return todayIssue.number;
     } else {
       // 创建新 Issue
@@ -215,6 +358,15 @@ async function createOrUpdateIssue(octokit, report, date) {
         labels: ['npm-stats', 'automated']
       });
       core.info(`Created new issue #${issue.number}`);
+      
+      // 添加评论以触发通知（GitHub 会在创建 Issue 时发送通知，但添加评论可以确保通知）
+      await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issue.number,
+        body: '📊 今日 npm 下载量统计报告已生成！'
+      });
+      
       return issue.number;
     }
   } catch (error) {
@@ -245,12 +397,7 @@ async function main() {
     const stats = await getPackageDownloads(packages);
     core.info(`Successfully fetched stats for ${stats.length} packages`);
 
-    // 生成报告
-    const today = new Date().toISOString().split('T')[0];
-    const report = generateReport(stats, today);
-    core.info('📝 Report generated');
-
-    // 创建 Issue
+    // 获取 GitHub token
     const token = core.getInput('github_token') || process.env.GITHUB_TOKEN;
     if (!token) {
       core.setFailed('GITHUB_TOKEN is required');
@@ -258,6 +405,22 @@ async function main() {
     }
 
     const octokit = github.getOctokit(token);
+    const today = new Date().toISOString().split('T')[0];
+
+    // 获取上一次的统计数据用于计算增长
+    core.info('🔍 Fetching previous stats for comparison...');
+    const previousStats = await getPreviousIssueStats(octokit, today);
+    if (previousStats) {
+      core.info('Found previous stats for comparison');
+    } else {
+      core.info('No previous stats found (this might be the first run)');
+    }
+
+    // 生成报告（包含增长数据）
+    const report = generateReport(stats, today, previousStats);
+    core.info('📝 Report generated');
+
+    // 创建 Issue
     const issueNumber = await createOrUpdateIssue(octokit, report, today);
     
     core.info(`✅ Successfully created/updated issue #${issueNumber}`);
