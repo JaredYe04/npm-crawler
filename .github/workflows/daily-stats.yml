@@ -2,8 +2,8 @@ name: Daily npm Stats Report
 
 on:
   schedule:
-    # 每天 UTC+8 的 9:00 (UTC 1:00) 执行
-    - cron: '0 1 * * *'
+    # 每天 UTC+8 的 18:00 (UTC 10:00) 执行
+    - cron: '0 10 * * *'
   workflow_dispatch: # 允许手动触发
 
 permissions:
